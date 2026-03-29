@@ -2,111 +2,72 @@ const express = require("express");
 const puppeteer = require("puppeteer");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
-const CACHE = {};
-const TTL = 5 * 60 * 1000;
+app.get("/api/tv", async (req, res) => {
+  const { date, league } = req.query; // date = "dd/mm/yyyy", league pl. "La Liga"
+  
+  if (!date || !league) return res.status(400).json({ error: "Missing date or league" });
 
-// --- dátum ---
-function formatDate(dateStr){
-  if(!dateStr || !dateStr.includes("/")) return null;
-  const [dd, mm, yyyy] = dateStr.split("/");
-  return `${yyyy}.${mm}.${dd}`;
-}
+  try {
+    const [day, month, year] = date.split("/");
+    const siteDate = `${year}.${month}.${day}`; // focimagazin format YYYY.MM.DD
+    
+    const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+    const page = await browser.newPage();
 
-// --- scraper ---
-async function scrape(dateStr, league){
+    await page.goto("https://focimagazin.hu/content/tv-m%C5%B1sor-%C3%A9l%C5%91-foci-tv-ben-j%C3%B6v%C5%91-h%C3%A9ten", { waitUntil: "networkidle2" });
 
-  const targetDate = formatDate(dateStr);
-  if(!targetDate) return [];
+    // Kiolvassa az összes táblázatot
+    const tvData = await page.evaluate((siteDate, league) => {
+      const tables = Array.from(document.querySelectorAll("table.table"));
+      const matches = [];
 
-  const browser = await puppeteer.launch({
-  args: ["--no-sandbox", "--disable-setuid-sandbox"]
-});
-const page = await browser.newPage();
+      tables.forEach(table => {
+        const dateCell = table.querySelector("tr:first-child td");
+        if (!dateCell) return;
 
-  const urls = [
-    "https://focimagazin.hu/content/tv-műsor-élő-foci-tv-ben",
-    "https://focimagazin.hu/content/tv-műsor-élő-foci-tv-ben-jövő-héten"
-  ];
+        const tableDate = dateCell.innerText.match(/\d{4}\.\d{2}\.\d{2}/);
+        if (!tableDate || tableDate[0] !== siteDate) return;
 
-  let results = [];
+        table.querySelectorAll("tr").forEach((row, i) => {
+          if (i === 0) return; // skip header
+          const cells = row.querySelectorAll("td");
+          if (cells.length < 3) return;
 
-  for(const url of urls){
-
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForSelector("table");
-
-    const data = await page.evaluate((targetDate, league) => {
-
-      const clean = t => t.replace(/\s+/g, " ").trim();
-      let output = [];
-      let currentDate = "";
-
-      document.querySelectorAll("table tr").forEach(row => {
-
-        const tds = row.querySelectorAll("td");
-
-        if(tds.length === 1 && tds[0].colSpan === 3){
-          currentDate = clean(tds[0].innerText.split(",")[0]);
-        }
-
-        if(tds.length === 3 && currentDate === targetDate){
-
-          const time = clean(tds[0].innerText);
-          const channel = clean(tds[1].innerText);
-          const match = clean(tds[2].innerText);
-
-          if(
-            league === "All" ||
-            match.toLowerCase().includes(league.toLowerCase())
-          ){
-            output.push({ time, channel, match });
+          const time = cells[0].innerText.trim();
+          const channel = cells[1].innerText.trim();
+          const matchText = cells[2].innerText.trim();
+          if (matchText.toLowerCase().includes(league.toLowerCase()) || league === "All") {
+            matches.push({
+              time,
+              channel,
+              match: matchText
+            });
           }
-        }
-
+        });
       });
 
-      return output;
+      return matches;
+    }, siteDate, league);
 
-    }, targetDate, league);
+    await browser.close();
 
-    results = results.concat(data);
+    if (!tvData || tvData.length === 0) {
+      return res.json([]);
+    }
+
+    res.json(tvData);
+
+  } catch (err) {
+    console.error("Error fetching TV data:", err);
+    res.status(500).json({ error: "Failed to fetch TV schedule" });
   }
+});
 
-  await browser.close();
-  return results;
-}
-
-// --- API ---
-app.get("/api/tv", async (req, res) => {
-
-  const date = req.query.date;
-  const league = req.query.league || "All";
-
-  if(!date) return res.json([]);
-
-  const key = date + "_" + league;
-
-  if(CACHE[key] && Date.now() - CACHE[key].time < TTL){
-    return res.json(CACHE[key].data);
-  }
-
-  try{
-    const data = await scrape(date, league);
-
-    CACHE[key] = {
-      time: Date.now(),
-      data: data
-    };
-
-    res.json(data);
-
-  }catch(e){
-    console.error(e);
-    res.json([]);
-  }
-
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 });
 
 app.listen(PORT, () => console.log("RUNNING ON:", PORT));
