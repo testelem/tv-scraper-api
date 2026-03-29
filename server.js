@@ -1,5 +1,5 @@
 const express = require("express");
-const { connect } = require("puppeteer-real-browser");
+const puppeteer = require("puppeteer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,11 +20,10 @@ async function scrape(dateStr, league){
   const targetDate = formatDate(dateStr);
   if(!targetDate) return [];
 
-  const { browser, page } = await connect({
-    headless: true,
-    turnstile: true,
-    args: ["--no-sandbox"]
-  });
+  const browser = await puppeteer.launch({
+  args: ["--no-sandbox", "--disable-setuid-sandbox"]
+});
+const page = await browser.newPage();
 
   const urls = [
     "https://focimagazin.hu/content/tv-műsor-élő-foci-tv-ben",
